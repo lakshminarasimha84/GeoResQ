@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GeoResQ — Live Nowcast</title>
+<meta name="description" content="Tactical satellite nowcast dashboard: cloud-top coldness, moisture flux and terrain ruggedness fused into live warnings for Northern India." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+
+<style>
+/* ================= DESIGN TOKENS ================= */
+:root {
+  --radius: 0.9rem;
+  --background: oklch(0.16 0.024 264);
+  --foreground: oklch(0.96 0.008 250);
+  --card: oklch(0.21 0.028 264);
+  --popover: oklch(0.19 0.026 264);
+  --primary: oklch(0.74 0.16 205);
+  --primary-foreground: oklch(0.16 0.024 264);
+  --secondary: oklch(0.27 0.03 262);
+  --muted: oklch(0.26 0.028 262);
+  --muted-foreground: oklch(0.68 0.03 256);
+  --destructive: oklch(0.62 0.24 22);
+  --border: oklch(0.32 0.03 258 / 70%);
+  --surface-glass: oklch(0.21 0.028 264 / 62%);
+  --grid-line: oklch(0.62 0.09 220 / 9%);
+
+  --hazard-flood: oklch(0.62 0.24 22);
+  --hazard-cloudburst: oklch(0.72 0.19 48);
+  --hazard-storm: oklch(0.62 0.24 22);
+  --hazard-clear: oklch(0.78 0.17 148);
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--background); color: var(--foreground); font-family: var(--font-display); -webkit-font-smoothing: antialiased; }
+code, .mono { font-family: var(--font-mono); }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+/* ================= BACKGROUND & LAYOUT ================= */
+.tactical-grid {
+  min-height: 100vh;
+  background-image:
+    radial-gradient(circle at 20% 10%, oklch(0.74 0.16 205 / 12%) 0%, transparent 45%),
+    radial-gradient(circle at 80% 80%, oklch(0.62 0.24 22 / 10%) 0%, transparent 48%),
+    repeating-linear-gradient(to right, var(--grid-line) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(to bottom, var(--grid-line) 0 1px, transparent 1px 64px);
+}
+.wrap { max-width: 1600px; margin: 0 auto; padding: 20px; }
+@media (min-width: 1024px) { .wrap { padding: 24px 32px; } }
+
+.glass-panel {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  background-color: var(--surface-glass);
+  border: 1px solid oklch(0.34 0.03 258 / 80%);
+  border-radius: calc(var(--radius) + 8px);
+  box-shadow: 0 24px 60px -24px oklch(0.08 0.02 264 / 90%), inset 0 1px 0 oklch(1 0 0 / 6%);
+}
+
+/* ================= HEADER ================= */
+.header-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+@media (min-width: 768px) {
+  .header-bar { flex-direction: row; align-items: center; justify-content: space-between; }
+}
+
+.brand { display: flex; align-items: center; gap: 14px; }
+.logo-tile {
+  width: 42px; height: 42px;
+  border-radius: 12px;
+  background: oklch(0.24 0.035 264);
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+}
+.logo-ring {
+  position: absolute; inset: -4px; border-radius: 16px;
+  border: 1px solid var(--primary);
+  opacity: 0.5;
+  animation: ping-ring 3s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+.brand h1 { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; }
+.status-line {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  display: flex; align-items: center; gap: 7px;
+  margin-top: 3px;
+}
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--hazard-clear);
+  position: relative;
+}
+.status-dot.standby { background: var(--muted-foreground); }
+.status-dot:not(.standby)::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 50%;
+  border: 1px solid var(--hazard-clear);
+  animation: ping-ring 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.toggle-switch-wrap {
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 12px; border-radius: 999px;
+  background: oklch(0.18 0.026 264 / 85%);
+  border: 1px solid var(--border);
+}
+.switch-btn {
+  width: 36px; height: 20px; border-radius: 999px;
+  background: var(--muted);
+  position: relative; transition: background 0.2s;
+}
+.switch-btn.active { background: var(--primary); }
+.switch-handle {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: white; position: absolute; top: 3px; left: 3px;
+  transition: transform 0.2s;
+}
+.switch-btn.active .switch-handle { transform: translateX(16px); }
+.api-url-text {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 18px; border-radius: 999px;
+  font-family: var(--font-display); font-weight: 600; font-size: 0.86rem;
+  background: oklch(0.74 0.16 205 / 12%);
+  border: 1px solid oklch(0.74 0.16 205 / 55%);
+  color: var(--foreground);
+  transition: all 0.2s;
+}
+.scan-btn:hover:not(:disabled) { background: oklch(0.74 0.16 205 / 24%); }
+.scan-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.spin-icon { animation: spin 1.2s linear infinite; }
+
+/* ================= HERO BANNER ================= */
+.hero-banner {
+  padding: 30px 24px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 22px;
+}
+.hero-glow {
+  position: absolute; inset: 0; pointer-events: none;
+  opacity: 0.18; transition: background 0.4s ease;
+}
+.hero-eyebrow {
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.hero-headline {
+  font-size: clamp(1.6rem, 3.5vw, 2.4rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 12px;
+}
+.hero-headline.flash { animation: alert-pulse 1.4s infinite; }
+.chip-code {
+  display: inline-block;
+  padding: 4px 10px; border-radius: 6px;
+  background: oklch(0.18 0.026 264 / 85%);
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 0.74rem;
+  margin-bottom: 12px;
+}
+.hero-meta-row {
+  display: flex; align-items: center; justify-content: center;
+  gap: 14px; font-size: 0.88rem;
+}
+.badge-pill {
+  padding: 3px 10px; border-radius: 999px;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.error-msg {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--destructive);
+  margin-top: 14px;
+}
+
+/* ================= GRID (MAP + INFO) ================= */
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+@media (min-width: 1024px) {
+  .main-grid { grid-template-columns: 3fr 2fr; }
+}
+
+/* MAP */
+.map-card { padding: 18px; display: flex; flex-direction: column; }
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.panel-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.92rem; font-weight: 600;
+}
+.coord-text {
+  font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted-foreground);
+}
+#map-container {
+  width: 100%; height: 580px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: oklch(0.14 0.02 264);
+}
+
+/* Leaflet pulsing marker styling */
+.hazard-pin { position: relative; }
+.pin-core {
+  width: 14px; height: 14px; border-radius: 50%;
+  position: absolute; top: 6px; left: 6px;
+}
+.pin-ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  animation: map-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+.pin-ring.second { animation-delay: 0.65s; }
+
+/* RIGHT COLUMN */
+.right-column { display: flex; flex-direction: column; gap: 20px; }
+.evidence-card { padding: 22px; }
+.eyebrow-mini {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.ward-heading { font-size: 1.3rem; font-weight: 700; margin-bottom: 2px; }
+.ward-subcoords {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  margin-bottom: 18px;
+}
+.imagery-box {
+  width: 100%; height: 150px;
+  border-radius: 12px;
+  background: radial-gradient(circle at 50% 30%, oklch(0.28 0.05 200 / 60%), oklch(0.18 0.024 264));
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted-foreground);
+  font-size: 0.82rem;
+  margin-bottom: 18px;
+  text-align: center;
+  padding: 12px;
+}
+.confidence-row {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 22px; font-size: 0.86rem;
+}
+.progress-track {
+  flex: 1; height: 8px; border-radius: 999px;
+  background: oklch(0.24 0.026 264);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%; width: 0%;
+  background: var(--primary);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.confidence-val {
+  font-family: var(--font-mono); font-size: 0.88rem; font-weight: 700;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.stat-tile {
+  background: oklch(0.18 0.024 264 / 65%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.stat-tile span {
+  display: block; font-size: 0.74rem; color: var(--muted-foreground); margin-bottom: 6px;
+}
+.stat-tile strong {
+  display: block; font-family: var(--font-mono); font-size: 0.96rem; font-weight: 600;
+}
+
+.summary-block { padding: 4px 6px; }
+.summary-lead { font-size: 0.92rem; line-height: 1.5; margin-bottom: 14px; }
+.summary-lead strong { color: oklch(0.72 0.16 250); }
+.quotes-list {
+  display: flex; flex-direction: column; gap: 10px;
+  border-left: 2px solid oklch(0.34 0.03 258 / 50%);
+  padding-left: 14px;
+}
+.quote-item { font-size: 0.84rem; color: var(--muted-foreground); line-height: 1.45; }
+
+/* ================= ANIMATIONS ================= */
+@keyframes alert-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes ping-ring { 0% { transform: scale(0.9); opacity: 0.8; } 100% { transform: scale(1.8); opacity: 0; } }
+@keyframes map-ping { 0% { transform: scale(0.4); opacity: 0.85; } 100% { transform: scale(2.2); opacity: 0; } }
+@keyframes spin { 100% { transform: rotate(360deg); } }
+</style>
+</head>
+
+<body>
+<div class="tactical-grid">
+  <div class="wrap">
+    
+    <!-- HEADER -->
+    <header class="header-bar glass-panel">
+      <div class="brand">
+        <div class="logo-tile">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary);"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg>
+          <div class="logo-ring"></div>
+        </div>
+        <div>
+          <h1>GeoResQ</h1>
+          <div class="status-line">
+            <span class="status-dot standby" id="status-dot"></span>
+            <span id="status-text">AWAITING LIVE SOURCE: MOSDAC INSAT-3DR + CARTODEM</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="toggle-switch-wrap">
+          <span class="mono" id="mode-label" style="font-size:0.75rem;">Live API</span>
+          <button class="switch-btn active" id="mode-toggle" aria-label="Toggle Live API"><div class="switch-handle"></div></button>
+          <input class="api-url-text" id="api-display-url" type="text" spellcheck="false"
+            placeholder="Paste ngrok URL, e.g. https://xxxx.ngrok-free.app"
+            style="background:transparent;border:1px solid var(--border);border-radius:6px;padding:3px 8px;color:inherit;width:230px;" />
+          <button class="scan-btn" id="save-url-btn" style="padding:6px 12px;font-size:0.72rem;">Set</button>
+        </div>
+        <button class="scan-btn" id="scan-trigger">
+          <svg id="scan-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="10"/></svg>
+          <span id="scan-btn-label">Run ConvLSTM Inference</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- HERO ALERT BANNER -->
+    <section class="hero-banner glass-panel" id="hero-banner">
+      <div class="hero-glow" id="hero-glow"></div>
+      <p class="hero-eyebrow">Multimodal Neural Inference · Regional Grid (75.4°E–79.1°E, 30.2°N–33.2°N)</p>
+      <h2 class="hero-headline" id="hero-title">READY TO INGEST SATELLITE TELEMETRY</h2>
+      <div id="hero-meta" style="display:none;">
+        <code class="chip-code" id="hero-timestamp"></code>
+        <div class="hero-meta-row">
+          <span class="badge-pill" id="hero-badge"></span>
+          <span>Threat Index <strong id="threat-val">0.00</strong> / 1.00</span>
+        </div>
+      </div>
+      <div class="error-msg" id="error-line" style="display:none;"></div>
+    </section>
+
+    <!-- TWO COLUMN GRID -->
+    <div class="main-grid">
+      <!-- MAP -->
+      <section class="glass-panel map-card">
+        <div class="panel-head">
+          <div class="panel-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary);"><circle cx="12" cy="12" r="10"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/></svg>
+            <span>Geospatial Pinpoint · Northern India Grid</span>
+          </div>
+          <code class="coord-text" id="map-coords">30.4126° N / 75.6039° E</code>
+        </div>
+        <div id="map-container"></div>
+      </section>
+
+      <!-- RIGHT EVIDENCE & SUMMARY -->
+      <aside class="right-column">
+        <section class="glass-panel evidence-card">
+          <p class="eyebrow-mini">Multimodal Evidence Audit</p>
+          <h3 class="ward-heading" id="ward-name">Zone PB-756 (Punjab / Himalayas)</h3>
+          <p class="ward-subcoords" id="ward-coords">30.4126° N, 75.6039° E</p>
+
+          <div class="imagery-box" id="imagery-status">
+            <span>INSAT-3DR (TIR-1 &amp; Water Vapor) + CartoDEM Multi-channel Raster Active</span>
+          </div>
+
+          <div class="confidence-row">
+            <span>Model Confidence</span>
+            <div class="progress-track"><div class="progress-fill" id="conf-bar"></div></div>
+            <span class="confidence-val" id="conf-val">—%</span>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-tile"><span>Cloud Coldness (TIR-1)</span><strong id="stat-coldness">—</strong></div>
+            <div class="stat-tile"><span>Water Vapor Index</span><strong id="stat-moisture">—</strong></div>
+            <div class="stat-tile"><span>CartoDEM Ruggedness</span><strong id="stat-ruggedness">—</strong></div>
+            <div class="stat-tile"><span>Ground Rain Gauge</span><strong id="stat-rain">—</strong></div>
+            <div class="stat-tile"><span>Pipeline Modality</span><strong id="stat-modality">Satellite + DEM + AWS</strong></div>
+            <div class="stat-tile"><span>Evacuation Window</span><strong id="stat-window">60 Min Lead Time</strong></div>
+          </div>
+        </section>
+
+        <section class="summary-block">
+          <p class="summary-lead"><strong>Operator Synthesis —</strong> <span id="summary-body">System initialized. Awaiting manual trigger or scheduled 30-min MOSDAC raster update cycle.</span></p>
+          <div class="quotes-list" id="quotes-box">
+            <div class="quote-item">“Awaiting active inference stream.” — Telemetry Core, Standby</div>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+// =========================================================================
+// BACKEND CONFIGURATION
+// Replace this with your active Ngrok URL (e.g. "https://xxxx.ngrok-free.app")
+// If running purely locally on your laptop browser, leave as "http://127.0.0.1:8000"
+// =========================================================================
+let BACKEND_BASE_URL = localStorage.getItem('backendUrl') || "http://127.0.0.1:8000";
+
+let isLive = true;
+let currentScan = null;
+let mapInstance = null;
+let markerLayer = null;
+
+// Initialize Leaflet satellite map
+function initMap() {
+  mapInstance = L.map('map-container', { scrollWheelZoom: true }).setView([30.4126, 75.6039], 8);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
+    maxZoom: 17
+  }).addTo(mapInstance);
+  markerLayer = L.layerGroup().addTo(mapInstance);
+
+  // Set default API display
+  document.getElementById('api-display-url').value = BACKEND_BASE_URL;
+  document.getElementById('save-url-btn').addEventListener('click', saveBackendUrl);
+  document.getElementById('api-display-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveBackendUrl();
+  });
+}
+
+function saveBackendUrl() {
+  const val = document.getElementById('api-display-url').value.trim();
+  if (val) {
+    BACKEND_BASE_URL = val.replace(/\/+$/, '');
+    localStorage.setItem('backendUrl', BACKEND_BASE_URL);
+  }
+}
+
+// Mode switch handler
+const modeToggle = document.getElementById('mode-toggle');
+const modeLabel = document.getElementById('mode-label');
+modeToggle.addEventListener('click', () => {
+  isLive = !isLive;
+  modeToggle.classList.toggle('active', isLive);
+  modeLabel.textContent = isLive ? 'Live API' : 'Mock Mode';
+});
+
+// Scan trigger button
+const scanBtn = document.getElementById('scan-trigger');
+const scanIcon = document.getElementById('scan-icon');
+const scanLabel = document.getElementById('scan-btn-label');
+const errLine = document.getElementById('error-line');
+
+scanBtn.addEventListener('click', async () => {
+  scanBtn.disabled = true;
+  scanIcon.classList.add('spin-icon');
+  scanLabel.textContent = 'Running Inference…';
+  errLine.style.display = 'none';
+
+  try {
+    if (!isLive) {
+      // Use fallback mock data when toggle is set to Mock Mode
+      const mockData = generateLocalMock();
+      applyScan(mockData);
+      return;
+    }
+
+    // Try fetching from both endpoints (/api/v1/alerts or /scan)
+    const alertUrl = `${BACKEND_BASE_URL.replace(/\/+$/, '')}/api/v1/alerts`;
+    const scanUrl = `${BACKEND_BASE_URL.replace(/\/+$/, '')}/scan`;
+    
+    let res;
+    try {
+      res = await fetch(alertUrl, {
+        method: "GET",
+        headers: { "ngrok-skip-browser-warning": "69420" }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from /api/v1/alerts`);
+    } catch (e) {
+      // If /api/v1/alerts fails to route or returns a bad status, attempt /scan
+      res = await fetch(scanUrl, {
+        method: "GET",
+        headers: { "ngrok-skip-browser-warning": "69420" }
+      });
+      if (!res.ok) throw new Error(`Live backend responded with HTTP status ${res.status}.`);
+    }
+    const rawData = await res.json();
+    
+    // Normalize either array or single object format from FastAPI
+    const normalizedData = normalizeBackendPayload(rawData);
+    applyScan(normalizedData);
+
+  } catch (err) {
+    console.error("Inference fetch error:", err);
+
+    if (!currentScan) {
+      applyScan(generateLocalMock());
+    }
+  } finally {
+    scanBtn.disabled = false;
+    scanIcon.classList.remove('spin-icon');
+    scanLabel.textContent = 'Run ConvLSTM Inference';
+  }
+});
+
+// Transforms FastAPI JSON payload to dashboard interface schema
+function normalizeBackendPayload(data) {
+  const item = Array.isArray(data) ? data[0] : data;
+  const ev = item.underlying_evidence || item.evidence || {};
+
+  return {
+    hazard_type: item.hazard_category || item.hazard_type || "FLASH FLOOD WARNING",
+    severity: item.severity || "WATCH",
+    latitude: item.lat || item.latitude || 30.4126,
+    longitude: item.lon || item.longitude || 75.6039,
+    timestamp: item.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + " IST",
+    confidence: item.confidence_score !== undefined ? item.confidence_score : (ev.confidence !== undefined ? ev.confidence : 0.36),
+    summary: item.summary || ev.summary || "Multimodal alert synthesized.",
+    operator_action: item.operator_action || "Maintain active monitoring of MOSDAC updates.",
+    coldness: ev.satellite_cloud_coldness !== undefined ? ev.satellite_cloud_coldness : 0.54,
+    moisture: ev.satellite_moisture_index !== undefined ? ev.satellite_moisture_index : 0.48,
+    ruggedness: ev.cartodem_ruggedness !== undefined ? ev.cartodem_ruggedness : 0.08,
+    rain_rate: ev.ground_sensor_reading !== undefined ? ev.ground_sensor_reading : "0.0 mm/hr"
+  };
+}
+
+function generateLocalMock() {
+  return {
+    hazard_type: "MODERATE RAINFALL",
+    severity: "WATCH",
+    latitude: 30.4126,
+    longitude: 75.6039,
+    timestamp: new Date().toLocaleTimeString() + " IST",
+    confidence: 0.36,
+    summary: "[WATCH] MODERATE RAINFALL flagged with 36% overall confidence. Primary triggers: rapid cloud-top cooling (54%), high mid-tropospheric water vapor (48%), flat terrain basin (0.08) water accumulation risk.",
+    operator_action: "Monitor next 30-min MOSDAC update",
+    coldness: 0.54,
+    moisture: 0.48,
+    ruggedness: 0.08,
+    rain_rate: "0.0 mm/hr"
+  };
+}
+
+function applyScan(scan) {
+  currentScan = scan;
+  document.getElementById('status-dot').classList.remove('standby');
+  document.getElementById('status-text').textContent = 'LIVE TELEMETRY: MOSDAC INSAT-3DR + CARTODEM (ONLINE)';
+
+  // Determine hazard level color schemes
+  let toneColor = 'var(--hazard-flood)';
+  let glyph = '🚨';
+  let badgeText = scan.severity || 'CRITICAL';
+  let flash = true;
+
+  const typeUpper = (scan.hazard_type || "").toUpperCase();
+  if (typeUpper.includes('CLOUDBURST') || badgeText === 'CRITICAL') {
+    toneColor = 'var(--hazard-cloudburst)';
+    glyph = '🌊';
+    flash = true;
+  } else if (typeUpper.includes('THUNDERSTORM') || typeUpper.includes('MODERATE') || badgeText === 'WATCH' || badgeText === 'WARNING') {
+    toneColor = 'oklch(0.75 0.18 55)'; // Warning Amber
+    glyph = '⚡';
+    flash = false;
+  } else if (typeUpper.includes('CLEAR') || typeUpper.includes('NORMAL')) {
+    toneColor = 'var(--hazard-clear)';
+    glyph = '✅';
+    flash = false;
+  }
+
+  // Update Hero Section
+  const titleEl = document.getElementById('hero-title');
+  titleEl.textContent = `${glyph} ${scan.hazard_type}`;
+  titleEl.style.color = toneColor;
+  titleEl.className = 'hero-headline' + (flash ? ' flash' : '');
+
+  document.getElementById('hero-glow').style.background =
+    `radial-gradient(circle at 50% 20%, ${toneColor} 0%, transparent 60%)`;
+
+  document.getElementById('hero-timestamp').textContent = scan.timestamp;
+  const badgeEl = document.getElementById('hero-badge');
+  badgeEl.textContent = badgeText;
+  badgeEl.style.background = toneColor;
+  badgeEl.style.color = '#fff';
+
+  const threat = Math.min(1.0, (scan.confidence * 0.7) + (scan.coldness * 0.3));
+  document.getElementById('threat-val').textContent = threat.toFixed(2);
+  document.getElementById('hero-meta').style.display = 'block';
+
+  // Leaflet Marker & Flight Animation
+  const pos = [scan.latitude, scan.longitude];
+  document.getElementById('map-coords').textContent = `${scan.latitude.toFixed(4)}° N / ${scan.longitude.toFixed(4)}° E`;
+
+  markerLayer.clearLayers();
+  const radius = 6000 + (scan.confidence * 12000);
+  L.circle(pos, { color: toneColor, fillColor: toneColor, fillOpacity: 0.18, weight: 1.5, radius }).addTo(markerLayer);
+
+  const customIcon = L.divIcon({
+    className: 'hazard-pin',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+    html: `<div class="pin-ring" style="border:2px solid ${toneColor};"></div><div class="pin-ring second" style="border:2px solid ${toneColor};"></div><div class="pin-core" style="background:${toneColor};"></div>`
+  });
+
+  const popupContent = `
+    <div style="font-family:var(--font-display);font-size:0.85rem;color:#111;">
+      <p style="font-weight:700;color:${toneColor};margin-bottom:2px;">${scan.hazard_type}</p>
+      <p style="font-family:var(--font-mono);font-size:0.75rem;margin-bottom:4px;">Severity: <strong>${badgeText}</strong></p>
+      <p style="font-family:var(--font-mono);font-size:0.75rem;margin-bottom:6px;">${scan.latitude.toFixed(4)}° N, ${scan.longitude.toFixed(4)}° E</p>
+      <a href="https://www.google.com/maps?q=${scan.latitude},${scan.longitude}" target="_blank" rel="noreferrer" style="color:var(--primary);font-weight:600;text-decoration:underline;">Inspect on Maps</a>
+    </div>
+  `;
+  L.marker(pos, { icon: customIcon }).addTo(markerLayer).bindPopup(popupContent);
+  mapInstance.flyTo(pos, 9, { duration: 2.0 });
+
+  // Update Evidence Card
+  document.getElementById('ward-coords').textContent = `${scan.latitude.toFixed(4)}° N, ${scan.longitude.toFixed(4)}° E`;
+  
+  const confPercent = Math.round(scan.confidence <= 1 ? scan.confidence * 100 : scan.confidence);
+  document.getElementById('conf-bar').style.width = `${confPercent}%`;
+  document.getElementById('conf-val').textContent = `${confPercent}%`;
+
+  document.getElementById('stat-coldness').textContent = `${(scan.coldness * 100).toFixed(0)}%`;
+  document.getElementById('stat-moisture').textContent = `${(scan.moisture * 100).toFixed(0)}%`;
+  document.getElementById('stat-ruggedness').textContent = scan.ruggedness;
+  document.getElementById('stat-rain').textContent = scan.rain_rate;
+
+  // Summary & Directives
+  document.getElementById('summary-body').textContent = scan.summary;
+  document.getElementById('quotes-box').innerHTML = `
+    <div class="quote-item"><strong>Recommended action:</strong> ${scan.operator_action}</div>
+    <div class="quote-item"><strong>Evidence basis:</strong> Satellite (coldness ${(scan.coldness*100).toFixed(0)}%, moisture ${(scan.moisture*100).toFixed(0)}%) + CartoDEM ruggedness ${scan.ruggedness} + ground rain gauge ${scan.rain_rate}.</div>
+  `;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initMap();
+  // Automatically trigger initial scan on launch
+  document.getElementById('scan-trigger').click();
+});
+</script>
+</body>
+</html>

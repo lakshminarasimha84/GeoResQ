@@ -1,0 +1,16 @@
+# Core deep-learning stack. If you already have a CUDA-enabled torch/torchvision
+# installed globally (e.g. torch 2.7.1 + cu118 on your RTX 4060), you can skip
+# reinstalling torch here to avoid pip pulling a CPU-only or mismatched wheel:
+#   pip install -r requirements.txt --no-deps torch torchvision  (skip torch line manually)
+#
+# Otherwise, install CUDA 11.8 wheels explicitly first, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0
+torchvision>=0.15
+
+lightning>=2.0        # provides `lightning.pytorch` (used throughout the project)
+tensorboard>=2.13
+numpy>=1.24
+tqdm>=4.65
+h5py>=3.8
+torchsummary>=1.5
